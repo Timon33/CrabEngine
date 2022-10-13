@@ -1,208 +1,681 @@
-use std::arch::x86_64::_pext_u64;
-use crate::{BitBoard, bitboard, board, Board, luts, piece, Square};
-use crate::luts::{BISHOP_OFFSET, KING_MOVES, ROOK_OFFSET};
+use crate::piece::{piece_type, Piece};
+use crate::uci::GoOptions::MovesToGo;
+use crate::{bitboard, castling, luts, piece, player, rank, square, BitBoard, Board, Move, Square};
 
-pub fn rook_moves(board: &Board) -> Vec<Move> {
-    let mut res: Vec<Move> = Vec::new();
-    let current_side = board.current_player;
-    let rooks = board.board_occupation[piece::ROOK | current_side];
-    let occ = board.board_occupation[piece::WHITE_OCC] | board.board_occupation[piece::BLACK_OCC];
-
-    for rook in rooks {
-        let sq = rook.as_square();
-        let moves;
-        unsafe {
-
-            let mask = BitBoard::rook_mask(&sq).as_u64();
-            moves = luts::ROOK_MOVE[luts::ROOK_OFFSET[sq.as_usize()] + _pext_u64(occ.as_u64(), mask) as usize]
-                & !board.board_occupation[current_side];
-        }
-        res.push(Move::new(rook, moves));
-    }
-    res
-}
-
-pub fn bishop_moves(board: &Board) -> Vec<Move> {
-    let mut res: Vec<Move> = Vec::new();
-    let current_side = board.current_player;
-    let bishops = board.board_occupation[piece::BISHOP | current_side];
-    let occ = board.board_occupation[piece::WHITE_OCC] | board.board_occupation[piece::BLACK_OCC];
-
-    for bishop in bishops {
-        let sq = bishop.as_square();
-        let moves;
-        unsafe {
-            let mask = BitBoard::bishop_mask(&sq).as_u64();
-            moves = luts::BISHOP_MOVE[luts::BISHOP_OFFSET[sq.as_usize()] + _pext_u64(occ.as_u64(), mask) as usize]
-                & !board.board_occupation[current_side];
-        }
-        res.push(Move::new(bishop, moves));
-    }
-    res
-}
-
-pub fn queen_moves(board: &Board) -> Vec<Move> {
-    let current_side = board.current_player;
-    let queen = board.board_occupation[piece::QUEEN | current_side];
-    let occ = board.board_occupation[piece::WHITE_OCC] | board.board_occupation[piece::BLACK_OCC];
-
-    let sq = queen.as_square();
-    let moves;
-    unsafe {
-        let bishop_mask = BitBoard::bishop_mask(&sq).as_u64();
-        let rook_mask = BitBoard::rook_mask(&sq).as_u64();
-        moves = (luts::BISHOP_MOVE[luts::BISHOP_OFFSET[sq.as_usize()] + _pext_u64(occ.as_u64(), bishop_mask) as usize]
-            | luts::ROOK_MOVE[luts::ROOK_OFFSET[sq.as_usize()] + _pext_u64(occ.as_u64(), rook_mask) as usize])
-            & !board.board_occupation[current_side];
-        vec![Move::new(queen, moves)]
-    }
-}
-
-pub fn king_moves(board: &Board) -> Vec<Move> {
-    let current_side = board.current_player;
-    let king = board.board_occupation[piece::KING | current_side];
-
-    let moves = luts::KING_MOVES[king.as_square().as_usize()] & !board.board_occupation[current_side];
-    vec![(Move::new(king, moves))]
-}
-
-pub fn knight_moves(board: &Board) -> Vec<Move> {
-    let mut res: Vec<Move> = Vec::new();
-    let current_side = board.current_player;
-    let knights = board.board_occupation[piece::KNIGHT | current_side];
-
-    for knight in knights {
-        let sq = knight.as_square();
-        let moves = luts::KNIGHT_MOVE[sq.as_usize()] & !board.board_occupation[current_side];
-        res.push(Move::new(knight, moves));
-    }
-    res
-}
-
-pub fn white_pawn_moves(board: &Board) -> Vec<Move> {
-    let mut res: Vec<Move> = Vec::new();
-    let pawns = board.board_occupation[piece::WHITE_PAWN];
-    let occ = board.board_occupation[piece::WHITE_OCC] | board.board_occupation[piece::BLACK_OCC];
-
-    for pawn in pawns {
-        let shift_up = pawn.shift_up(1);
-        let mut moves = shift_up & !occ;
-        moves |= (shift_up.shift_left(1) | shift_up.shift_right(1))
-            & (board.board_occupation[piece::BLACK_SIDE] | board.en_passant_mask);
-
-        if pawn & piece::STARTING_WHITE_PAWNS != BitBoard::EMPTY {
-            moves |= pawn.shift_up(2) & !(occ | occ.shift_up(1));
-        }
-        res.push(Move::new(pawn, moves));
-    }
-    res
-}
-
-pub fn black_pawn_moves(board: &Board) -> Vec<Move> {
-    let mut res: Vec<Move> = Vec::new();
-    let pawns = board.board_occupation[piece::BLACK_PAWN];
-    let occ = board.board_occupation[piece::WHITE_OCC] | board.board_occupation[piece::BLACK_OCC];
-
-    for pawn in pawns {
-        let shift_down = pawn.shift_down(1);
-        let mut moves = shift_down & !occ;
-        moves |= (shift_down.shift_left(1) | shift_down.shift_right(1))
-            & (board.board_occupation[piece::WHITE_SIDE] | board.en_passant_mask);
-
-        if pawn & piece::STARTING_BLACK_PAWNS != BitBoard::EMPTY {
-            moves |= pawn.shift_down(2) & !(occ | occ.shift_down(1));
-        }
-        res.push(Move::new(pawn, moves));
-    }
-    res
-}
-
-#[inline(always)]
-pub fn pawn_attacks(board: &Board) {
-    let pawn_attacks = if IsWhite {
-        (board.w_pawns << 7) & 0x7F7F7F7F7F7F7F7F | (board.w_pawns << 9) & 0xFEFEFEFEFEFEFEFE
+#[inline]
+pub fn pawn_attacks<const IS_WHITE: bool>(pawns: BitBoard) -> BitBoard {
+    if IS_WHITE {
+        (pawns << 7) & 0x7F7F7F7F7F7F7F7F | (pawns << 9) & 0xFEFEFEFEFEFEFEFE
     } else {
-        (board.b_pawns >> 9) & 0x7F7F7F7F7F7F7F7F | (board.b_pawns >> 7) & 0xFEFEFEFEFEFEFEFE
-    };
-}
-
-#[inline(always)]
-pub fn rook_attacks(sq: &Square, occ: BitBoard) -> BitBoard {
-    unsafe {
-        luts::ROOK_MOVE[ROOK_OFFSET[sq as usize] + bitboard::pext(occ, bitboard::rook_mask(sq)) as usize]
+        (pawns >> 9) & 0x7F7F7F7F7F7F7F7F | (pawns >> 7) & 0xFEFEFEFEFEFEFEFE
     }
 }
 
-#[inline(always)]
-pub fn bishop_attacks(sq: &Square, occ: BitBoard) -> BitBoard {
-    unsafe {
-        luts::BISHOP_MOVE[BISHOP_OFFSET[sq as usize] + bitboard::pext(occ, bitboard::bishop_mask(sq)) as usize]
-    }
-}
-
-#[inline(always)]
-pub fn queen_attacks(sq: &Square, occ: BitBoard) -> BitBoard {
-    rook_attacks(sq, occ) | bishop_attacks(sq, occ)
-}
-
-/// returns bitboard with square attacked by enemy
-pub fn check_mask<const IsWhite: bool>(board: &Board) -> BitBoard {
-    let king_sq = if IsWhite { bitboard::as_square(&board.w_king) } else { bitboard::as_square(&board.b_king) };
-    let king_rays = rook_attacks(&king_square, board.occ) | bishop_attacks(&king_square, board.occ);
-
-    let pawn_mask = if IsWhite {
-        // mask black pawns attacking white king
-        ((board.w_king << 7) & 0x7F7F7F7F7F7F7F7F | (board.w_king << 9) & 0xFEFEFEFEFEFEFEFE) & board.b_pawns
+#[inline]
+pub fn pawn_moves<const IS_WHITE: bool>(pawns: BitBoard, occ: BitBoard) -> BitBoard {
+    if IS_WHITE {
+        pawns << 8 & !occ
     } else {
-        // mask white pawn attacking black king
-        ((board.b_king >> 9) & 0x7F7F7F7F7F7F7F7F | (board.b_king >> 7) & 0xFEFEFEFEFEFEFEFE) & board.w_pawns
-    };
-
-    let knight_mask = if IsWhite {
-        luts::KNIGHT_MOVE[king_sq] & board.b_knight
-    } else {
-        luts::KNIGHT_MOVE[king_sq] & board.w_knight
-    };
-
-    let queen = if IsWhite { &board.b_queen } else { board.w_queen };
-    let queen_mask = king_rays & (queen | queen_attacks(&bitboard::as_square(queen), board.occ));
-
-    let mut rooks = if IsWhite { &board.b_rooks } else { board.w_rooks };
-    let rook_sq1 = bitboard::as_square(&bitboard::extract_lsb(&mut rooks));
-    let rook_sq2 = bitboard::as_square(&rooks);
-    let rook_mask = king_rays & (rooks | rook_attacks(&rook_sq1, board.occ) | rook_attacks(&rook_sq2, board.occ));
-
-    let mut bishops = if IsWhite { &board.b_bishops } else { board.w_bishops };
-    let bishop_sq1 = bitboard::as_square(&bitboard::extract_lsb(&mut bishops));
-    let bishop_sq2 = bitboard::as_square(&bishops);
-    let bishop_mask = king_rays & (bishops | rook_attacks(&bishop_sq1, board.occ) | rook_attacks(&bishop_sq2, board.occ));
-
-    pawn_mask | knight_mask | queen_mask | rook_mask | bishop_mask
-}
-
-pub fn legal_moves(board: &Board) {
-    let pawn_moves;
-    if board.current_player == piece::WHITE_SIDE {
-        pawn_moves = white_pawn_moves(&board);
-    } else {
-        pawn_moves = black_pawn_moves(&board);
-    }
-
-    let knight_moves = knight_moves(&board);
-    let king_moves  = king_moves(&board);
-
-    let rook_moves = rook_moves(&board);
-    let bishop_moves = bishop_moves(&board);
-    let queen_moves = queen_moves(&board);
-
-    // if the current side is in check only allow moves that:
-    // - move the king out of check
-    // - block the queen/rook/bishop attacking
-    // - capture the attacking piece
-    if board.in_check {
-
+        pawns >> 8 & !occ
     }
 }
 
+#[inline]
+pub fn double_pawn_moves<const IS_WHITE: bool>(pawns: BitBoard, occ: BitBoard) -> BitBoard {
+    if IS_WHITE {
+        ((pawns & bitboard::rank_mask_of_sq(square::A2)) << 16) & !(occ | (occ << 8))
+    } else {
+        ((pawns & bitboard::rank_mask_of_sq(square::A7)) >> 16) & !(occ | (occ >> 8))
+    }
+}
 
+impl Board {
+    #[inline]
+    fn promote_piece<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
+        &mut self,
+        callback: &mut T,
+        from: BitBoard,
+        to: BitBoard,
+    ) {
+        self.set_friendly::<IS_WHITE, { piece::ROOK }>(
+            self.get_friendly::<IS_WHITE, { piece::ROOK }>() ^ to,
+        );
+        let rook_move = Move::new_promotion(piece::PAWN, from, to, piece::ROOK, to);
+        callback(self, rook_move);
+        self.set_friendly::<IS_WHITE, { piece::ROOK }>(
+            self.get_friendly::<IS_WHITE, { piece::ROOK }>() ^ to,
+        );
 
+        self.set_friendly::<IS_WHITE, { piece::KNIGHT }>(
+            self.get_friendly::<IS_WHITE, { piece::KNIGHT }>() ^ to,
+        );
+        let knight_move = Move::new_promotion(piece::PAWN, from, to, piece::KNIGHT, to);
+        callback(self, knight_move);
+        self.set_friendly::<IS_WHITE, { piece::KNIGHT }>(
+            self.get_friendly::<IS_WHITE, { piece::KNIGHT }>() ^ to,
+        );
+
+        self.set_friendly::<IS_WHITE, { piece::BISHOP }>(
+            self.get_friendly::<IS_WHITE, { piece::BISHOP }>() ^ to,
+        );
+        let bishop_move = Move::new_promotion(piece::PAWN, from, to, piece::BISHOP, to);
+        callback(self, bishop_move);
+        self.set_friendly::<IS_WHITE, { piece::BISHOP }>(
+            self.get_friendly::<IS_WHITE, { piece::BISHOP }>() ^ to,
+        );
+
+        self.set_friendly::<IS_WHITE, { piece::QUEEN }>(
+            self.get_friendly::<IS_WHITE, { piece::QUEEN }>() ^ to,
+        );
+        let queen_move = Move::new_promotion(piece::PAWN, from, to, piece::QUEEN, to);
+        callback(self, queen_move);
+        self.set_friendly::<IS_WHITE, { piece::QUEEN }>(
+            self.get_friendly::<IS_WHITE, { piece::QUEEN }>() ^ to,
+        );
+    }
+
+    #[inline]
+    fn silent_moves_loop<T: FnMut(&mut Board, Move), const IS_WHITE: bool, const PIECE: Piece>(
+        &mut self,
+        callback: &mut T,
+        from: BitBoard,
+        mut moves: BitBoard,
+    ) {
+        while moves != bitboard::EMPTY {
+            let to = bitboard::extract_lsb(&mut moves);
+
+            if PIECE == piece::PAWN {
+                // check for promotions
+                if to & (bitboard::rank_mask(rank::RANK_1) | bitboard::rank_mask(rank::RANK_8))
+                    != bitboard::EMPTY
+                {
+                    self.apply_silent_move::<IS_WHITE, PIECE>(from);
+
+                    self.pieces[piece::ALL] ^= to;
+                    self.pieces[if IS_WHITE {
+                        piece::WHITE_OCC
+                    } else {
+                        piece::BLACK_OCC
+                    }] ^= to;
+                    self.promote_piece::<T, IS_WHITE>(callback, from, to);
+                    self.pieces[piece::ALL] ^= to;
+                    self.pieces[if IS_WHITE {
+                        piece::WHITE_OCC
+                    } else {
+                        piece::BLACK_OCC
+                    }] ^= to;
+
+                    self.apply_silent_move::<IS_WHITE, PIECE>(from);
+                    continue;
+                }
+            }
+            self.apply_silent_move::<IS_WHITE, PIECE>(from | to);
+            callback(self, Move::new_silent(PIECE, from, to));
+            self.apply_silent_move::<IS_WHITE, PIECE>(from | to);
+        }
+    }
+
+    #[inline]
+    fn capture_loop<T: FnMut(&mut Board, Move), const IS_WHITE: bool, const PIECE: Piece>(
+        &mut self,
+        callback: &mut T,
+        from: BitBoard,
+        mut moves: BitBoard,
+    ) {
+        let enemy_pieces = self.copy_enemies_pieces::<IS_WHITE>();
+        while moves != bitboard::EMPTY {
+            let to = bitboard::extract_lsb(&mut moves);
+
+            if PIECE == piece::PAWN {
+                // check for promotions
+                if to & (bitboard::rank_mask(rank::RANK_1) | bitboard::rank_mask(rank::RANK_8))
+                    != bitboard::EMPTY
+                {
+                    self.apply_silent_move::<IS_WHITE, PIECE>(from);
+                    self.clear_enemy_from_square::<IS_WHITE>(to);
+
+                    self.pieces[if IS_WHITE {
+                        piece::WHITE_OCC
+                    } else {
+                        piece::BLACK_OCC
+                    }] ^= to;
+                    self.promote_piece::<T, IS_WHITE>(callback, from, to);
+                    self.pieces[if IS_WHITE {
+                        piece::WHITE_OCC
+                    } else {
+                        piece::BLACK_OCC
+                    }] ^= to;
+
+                    self.apply_silent_move::<IS_WHITE, PIECE>(from);
+                    self.set_all_enemies_pieces::<IS_WHITE>(&enemy_pieces);
+                    continue;
+                }
+            }
+
+            self.apply_capture::<IS_WHITE, PIECE>(from, to);
+            callback(self, Move::new_capture(PIECE, from, to, to));
+            self.undo_capture::<IS_WHITE, PIECE>(from, to, &enemy_pieces)
+        }
+    }
+
+    #[inline]
+    pub fn danger_mask<const IS_WHITE: bool>(&self) -> BitBoard {
+        let king = self.get_enemy::<IS_WHITE, { piece::KING }>();
+        let mut knights = self.get_enemy::<IS_WHITE, { piece::KNIGHT }>();
+        let pawns = self.get_enemy::<IS_WHITE, { piece::PAWN }>();
+        let mut queens = self.get_enemy::<IS_WHITE, { piece::QUEEN }>();
+        let mut rooks = self.get_enemy::<IS_WHITE, { piece::ROOK }>();
+        let mut bishops = self.get_enemy::<IS_WHITE, { piece::BISHOP }>();
+
+        let occ = self.pieces[piece::ALL] & !self.get_friendly::<IS_WHITE, { piece::KING }>();
+
+        let mut queen_danger = bitboard::EMPTY;;
+        while queens != bitboard::EMPTY {
+            let queen = bitboard::extract_lsb(&mut queens);
+            queen_danger |= luts::queen_moves_lut(bitboard::to_square(queen), occ);
+        }
+
+        let mut rook_danger = bitboard::EMPTY;
+        while rooks != bitboard::EMPTY {
+            let rook = bitboard::extract_lsb(&mut rooks);
+            rook_danger |= luts::rook_moves_lut(bitboard::to_square(rook), occ);
+        }
+
+        let mut bishop_danger = bitboard::EMPTY;
+        while bishops != bitboard::EMPTY {
+            let bishop = bitboard::extract_lsb(&mut bishops);
+            bishop_danger |= luts::bishop_moves_lut(bitboard::to_square(bishop), occ);
+        }
+
+        let king_danger = luts::KING_MOVES[bitboard::to_square(king) as usize];
+        let mut pawn_danger = bitboard::EMPTY;
+        if IS_WHITE {
+            pawn_danger = pawn_attacks::<false>(pawns);
+        } else {
+            pawn_danger = pawn_attacks::<true>(pawns);
+        }
+
+        // TODO improve speed branchless
+        let mut knight_danger = bitboard::EMPTY;
+        while knights != bitboard::EMPTY {
+            let knight = bitboard::extract_lsb(&mut knights);
+            knight_danger |= luts::KNIGHT_MOVE[bitboard::to_square(knight) as usize]
+        }
+
+        queen_danger | rook_danger | bishop_danger | king_danger | pawn_danger | knight_danger
+    }
+
+    #[inline]
+    pub fn double_check<const IS_WHITE: bool>(&self) -> bool {
+        let king = self.get_friendly::<IS_WHITE, { piece::KING }>();
+        let king_sq = bitboard::to_square(king);
+
+        let pawn_checkers =
+            pawn_attacks::<IS_WHITE>(king) & self.get_enemy::<IS_WHITE, { piece::PAWN }>();
+        let knight_checkers =
+            luts::KNIGHT_MOVE[king_sq as usize] & self.get_enemy::<IS_WHITE, { piece::KNIGHT }>();
+
+        let queens = self.get_enemy::<IS_WHITE, { piece::QUEEN }>();
+        let rooks = self.get_enemy::<IS_WHITE, { piece::ROOK }>();
+        let bishops = self.get_enemy::<IS_WHITE, { piece::BISHOP }>();
+
+        // check sliding pieces
+        let hv_checkers = (queens | rooks) & luts::rook_moves_lut(king_sq, self.pieces[piece::ALL]);
+        let diag_checkers: BitBoard =
+            (queens | bishops) & luts::bishop_moves_lut(king_sq, self.pieces[piece::ALL]);
+
+        // if there is also a sliding checker it's a double check
+        (hv_checkers | diag_checkers | pawn_checkers | knight_checkers).count_ones() >= 2
+    }
+
+    #[inline]
+    pub fn check_mask<const IS_WHITE: bool>(&self, en_passant_mask: BitBoard) -> BitBoard {
+        let king = self.get_friendly::<IS_WHITE, { piece::KING }>();
+        let king_sq = bitboard::to_square(king);
+
+        let mut pawn_mask =
+            pawn_attacks::<IS_WHITE>(king) & self.get_enemy::<IS_WHITE, { piece::PAWN }>();
+
+        let knight_mask =
+            luts::KNIGHT_MOVE[king_sq as usize] & self.get_enemy::<IS_WHITE, { piece::KNIGHT }>();
+
+        let queens = self.get_enemy::<IS_WHITE, { piece::QUEEN }>();
+        let rooks = self.get_enemy::<IS_WHITE, { piece::ROOK }>();
+        let bishops = self.get_enemy::<IS_WHITE, { piece::BISHOP }>();
+
+        // get hv sliding attackers seen by king
+        let mut hv_checkers: BitBoard =
+            (queens | rooks) & luts::rook_moves_lut(king_sq, self.pieces[piece::ALL]);
+        let mut hv_check_mask = bitboard::EMPTY;
+        // calculate up to 4 check masks
+        while hv_checkers != bitboard::EMPTY {
+            let checker = bitboard::extract_lsb(&mut hv_checkers);
+            hv_check_mask |= luts::HV_SLIDER_CHECK_MASK
+                [square::two_sq_index(&bitboard::to_square(checker), &king_sq)];
+        }
+
+        // get diag sliding attackers seen by king
+        let mut diag_checkers: BitBoard =
+            (queens | bishops) & luts::bishop_moves_lut(king_sq, self.pieces[piece::ALL]);
+        let mut diag_check_mask = bitboard::EMPTY;
+        // calculate up to 4 check masks
+        while diag_checkers != bitboard::EMPTY {
+            let checker = bitboard::extract_lsb(&mut diag_checkers);
+            diag_check_mask |= luts::DIAG_SLIDER_CHECK_MASK
+                [square::two_sq_index(&bitboard::to_square(checker), &king_sq)];
+        }
+
+        let check_mask: BitBoard = pawn_mask | knight_mask | hv_check_mask | diag_check_mask;
+        match check_mask.count_ones() {
+            0 => u64::MAX,
+            _ => check_mask,
+        }
+    }
+
+    #[inline]
+    pub fn hv_pin_mask<const IS_WHITE: bool>(
+        &self,
+        possibly_pinned_sq: Square,
+        occ: BitBoard,
+    ) -> BitBoard {
+        let king = self.get_friendly::<IS_WHITE, { piece::KING }>();
+        let king_sq = bitboard::to_square(king);
+
+        // get enemy slider
+        let queens = self.get_enemy::<IS_WHITE, { piece::QUEEN }>();
+        let rooks = self.get_enemy::<IS_WHITE, { piece::ROOK }>();
+
+        let pinner = queens | rooks;
+
+        let seen_by_pinned = luts::rook_moves_lut(possibly_pinned_sq, occ);
+        let relevant = seen_by_pinned & bitboard::rook_mask(king_sq) & (king | pinner);
+
+        match relevant.count_ones() {
+            2 => {
+                if relevant & king != bitboard::EMPTY {
+                    seen_by_pinned & bitboard::rook_mask(king_sq) & !king
+                } else {
+                    bitboard::EVERYTHING
+                }
+            }
+            _ => bitboard::EVERYTHING,
+        }
+    }
+
+    #[inline]
+    pub fn diag_pin_mask<const IS_WHITE: bool>(
+        &self,
+        possibly_pinned_sq: Square,
+        occ: BitBoard,
+    ) -> BitBoard {
+        let king = self.get_friendly::<IS_WHITE, { piece::KING }>();
+        let king_sq = bitboard::to_square(king);
+
+        // get enemy slider
+        let queens = self.get_enemy::<IS_WHITE, { piece::QUEEN }>();
+        let bishops = self.get_enemy::<IS_WHITE, { piece::BISHOP }>();
+
+        let pinner = queens | bishops;
+
+        let seen_by_pinned = luts::bishop_moves_lut(possibly_pinned_sq, occ);
+        let relevant = seen_by_pinned & bitboard::bishop_mask(king_sq) & (king | pinner);
+
+        match (relevant | king).count_ones() {
+            2 => {
+                if relevant & king != bitboard::EMPTY {
+                    seen_by_pinned & bitboard::bishop_mask(king_sq) & !king
+                } else {
+                    bitboard::EVERYTHING
+                }
+            }
+            _ => bitboard::EVERYTHING,
+        }
+    }
+
+    #[inline]
+    pub fn pin_mask<const IS_WHITE: bool>(
+        &self,
+        possibly_pinned_sq: Square,
+        occ: BitBoard,
+    ) -> BitBoard {
+        self.hv_pin_mask::<IS_WHITE>(possibly_pinned_sq, occ)
+            & self.diag_pin_mask::<IS_WHITE>(possibly_pinned_sq, occ)
+    }
+
+    #[inline]
+    pub fn king_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
+        &mut self,
+        callback: &mut T,
+    ) {
+        let king = self.get_friendly::<IS_WHITE, { piece::KING }>();
+        let king_sq = bitboard::to_square(king);
+
+        let empty = !self.pieces[piece::ALL];
+        let enemy = self.get_enemy::<IS_WHITE, { piece::OCC }>();
+        let danger_mask = self.danger_mask::<IS_WHITE>();
+
+        let old_castling_rights = self.castling_rights;
+        self.clear_rights::<IS_WHITE>();
+
+        let king_moves = luts::KING_MOVES[king_sq as usize] & !danger_mask;
+        let silent_king_moves = king_moves & empty;
+        self.silent_moves_loop::<T, IS_WHITE, { piece::KING }>(callback, king, silent_king_moves);
+
+        let king_captures = king_moves & enemy;
+        self.capture_loop::<T, IS_WHITE, { piece::KING }>(callback, king, king_captures);
+
+        self.castling_rights = old_castling_rights;
+    }
+
+    #[inline]
+    pub fn castling_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
+        &mut self,
+        callback: &mut T,
+    ) {
+        let rooks = self.get_friendly::<IS_WHITE, { piece::ROOK }>();
+        let danger_mask = self.danger_mask::<IS_WHITE>();
+        let all = self.pieces[piece::ALL];
+
+        let king_rook_mask = if IS_WHITE {
+            bitboard::from_square(square::H1)
+        } else {
+            bitboard::from_square(square::H8)
+        };
+        let queen_rook_mask = if IS_WHITE {
+            bitboard::from_square(square::A1)
+        } else {
+            bitboard::from_square(square::A8)
+        };
+
+        if self.king_side_rights::<IS_WHITE>()
+            && !self.king_castling_blocked::<IS_WHITE>(all, danger_mask)
+            && rooks & king_rook_mask != bitboard::EMPTY
+        {
+            self.castle_king_side::<T, IS_WHITE>(callback);
+        }
+        if self.queen_side_rights::<IS_WHITE>()
+            && !self.queen_castling_blocked::<IS_WHITE>(all, danger_mask)
+            && rooks & queen_rook_mask != bitboard::EMPTY
+        {
+            self.castle_queen_side::<T, IS_WHITE>(callback);
+        }
+    }
+
+    #[inline]
+    pub fn pawn_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
+        &mut self,
+        callback: &mut T,
+        check_mask: BitBoard,
+    ) {
+        let mut pawns = self.get_friendly::<IS_WHITE, { piece::PAWN }>();
+
+        let all = self.pieces[piece::ALL];
+        let enemy = self.get_enemy::<IS_WHITE, { piece::OCC }>();
+
+        while pawns != bitboard::EMPTY {
+            let pawn = bitboard::extract_lsb(&mut pawns);
+            let pin_mask = self.pin_mask::<IS_WHITE>(bitboard::to_square(pawn), all);
+
+            let silent_pawn_moves = pawn_moves::<IS_WHITE>(pawn, all) & pin_mask & check_mask;
+            self.silent_moves_loop::<T, IS_WHITE, { piece::PAWN }>(
+                callback,
+                pawn,
+                silent_pawn_moves,
+            );
+
+            let double_pawn_moves =
+                double_pawn_moves::<IS_WHITE>(pawn, all) & pin_mask & check_mask;
+            let en_passant_sq = if IS_WHITE { pawn << 8 } else { pawn >> 8 };
+            self.pieces[piece::EN_PASSANT] ^= en_passant_sq;
+            self.silent_moves_loop::<T, IS_WHITE, { piece::PAWN }>(
+                callback,
+                pawn,
+                double_pawn_moves,
+            );
+            self.pieces[piece::EN_PASSANT] ^= en_passant_sq;
+
+            let pawn_captures = pawn_attacks::<IS_WHITE>(pawn) & enemy & pin_mask & check_mask;
+            self.capture_loop::<T, IS_WHITE, { piece::PAWN }>(callback, pawn, pawn_captures);
+        }
+    }
+
+    #[inline]
+    pub fn en_passant_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
+        &mut self,
+        callback: &mut T,
+        en_passant_mask: BitBoard,
+        mut check_mask: BitBoard,
+    ) {
+        // en passant is possible and blocks check if there is one
+        let king = self.get_friendly::<IS_WHITE, { piece::KING }>();
+        let pawn_checks =
+            pawn_attacks::<IS_WHITE>(king) & self.get_enemy::<IS_WHITE, { piece::PAWN }>();
+        check_mask |= if IS_WHITE {
+            pawn_checks << 8
+        } else {
+            pawn_checks >> 8
+        } & en_passant_mask;
+        if en_passant_mask & check_mask != bitboard::EMPTY {
+            let all = self.pieces[piece::ALL];
+            let mut pawns = self.get_friendly::<IS_WHITE, { piece::PAWN }>();
+
+            let pawn_to_capture;
+            if IS_WHITE {
+                pawns &= pawn_attacks::<false>(en_passant_mask);
+                pawn_to_capture = en_passant_mask >> 8;
+            } else {
+                pawns &= pawn_attacks::<true>(en_passant_mask);
+                pawn_to_capture = en_passant_mask << 8;
+            }
+
+            let capture_sq = bitboard::to_square(pawn_to_capture);
+
+            while pawns != bitboard::EMPTY {
+                let attacker = bitboard::extract_lsb(&mut pawns);
+                let attacker_sq = bitboard::to_square(attacker);
+
+                let attacker_pin_mask =
+                    self.pin_mask::<IS_WHITE>(attacker_sq, all ^ pawn_to_capture);
+                let capture_pin_mask = self.pin_mask::<IS_WHITE>(capture_sq, all ^ attacker);
+
+                // println!("{}", bitboard::to_string(attacker));
+                // println!("{}", bitboard::to_string(attacker_pin_mask));
+                // println!("{}", bitboard::to_string(capture_pin_mask));
+
+                if en_passant_mask & attacker_pin_mask & capture_pin_mask != bitboard::EMPTY {
+                    self.apply_silent_move::<IS_WHITE, { piece::PAWN }>(attacker | en_passant_mask);
+                    self.en_passant_update::<IS_WHITE>(pawn_to_capture);
+
+                    callback(
+                        self,
+                        Move::new_capture(piece::PAWN, attacker, en_passant_mask, pawn_to_capture),
+                    );
+
+                    self.apply_silent_move::<IS_WHITE, { piece::PAWN }>(attacker | en_passant_mask);
+                    self.en_passant_update::<IS_WHITE>(pawn_to_capture);
+                }
+            }
+        }
+    }
+
+    #[inline]
+    pub fn knight_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
+        &mut self,
+        callback: &mut T,
+        check_mask: BitBoard,
+    ) {
+        let all = self.pieces[piece::ALL];
+        let enemy = self.get_enemy::<IS_WHITE, { piece::OCC }>();
+
+        let mut knights = self.get_friendly::<IS_WHITE, { piece::KNIGHT }>();
+        while knights != bitboard::EMPTY {
+            let knight = bitboard::extract_lsb(&mut knights);
+            let pin_mask = self.pin_mask::<IS_WHITE>(bitboard::to_square(knight), all);
+
+            let knight_moves =
+                luts::KNIGHT_MOVE[bitboard::to_square(knight) as usize] & check_mask & pin_mask;
+
+            let silent_knight_moves = knight_moves & !all;
+            self.silent_moves_loop::<T, IS_WHITE, { piece::KNIGHT }>(
+                callback,
+                knight,
+                silent_knight_moves,
+            );
+
+            let knight_captures = knight_moves & enemy;
+            self.capture_loop::<T, IS_WHITE, { piece::KNIGHT }>(callback, knight, knight_captures);
+        }
+    }
+
+    #[inline]
+    pub fn bishop_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
+        &mut self,
+        callback: &mut T,
+        check_mask: BitBoard,
+    ) {
+        let all = self.pieces[piece::ALL];
+        let enemy = self.get_enemy::<IS_WHITE, { piece::OCC }>();
+
+        let mut bishops = self.get_friendly::<IS_WHITE, { piece::BISHOP }>();
+        while bishops != bitboard::EMPTY {
+            let bishop = bitboard::extract_lsb(&mut bishops);
+            let bishop_sq = bitboard::to_square(bishop);
+            let pin_mask = self.pin_mask::<IS_WHITE>(bishop_sq, all);
+
+            let bishop_moves = luts::bishop_moves_lut(bishop_sq, all) & check_mask & pin_mask;
+
+            let silent_bishop_moves = bishop_moves & !all;
+            self.silent_moves_loop::<T, IS_WHITE, { piece::BISHOP }>(
+                callback,
+                bishop,
+                silent_bishop_moves,
+            );
+
+            let bishop_captures = bishop_moves & enemy;
+            self.capture_loop::<T, IS_WHITE, { piece::BISHOP }>(callback, bishop, bishop_captures);
+        }
+    }
+
+    #[inline]
+    pub fn rook_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
+        &mut self,
+        callback: &mut T,
+        check_mask: BitBoard,
+    ) {
+        let all = self.pieces[piece::ALL];
+        let enemy = self.get_enemy::<IS_WHITE, { piece::OCC }>();
+
+        let mut rooks = self.get_friendly::<IS_WHITE, { piece::ROOK }>();
+        while rooks != bitboard::EMPTY {
+            let rook = bitboard::extract_lsb(&mut rooks);
+            let rook_sq = bitboard::to_square(rook);
+            let pin_mask = self.pin_mask::<IS_WHITE>(rook_sq, all);
+
+            let rook_moves = luts::rook_moves_lut(rook_sq, all) & check_mask & pin_mask;
+
+            let old_castling_rights = self.castling_rights;
+            if IS_WHITE {
+                if rook & bitboard::from_square(square::A1) != bitboard::EMPTY {
+                    self.castling_rights &= !castling::WHITE_QUEEN_SIDE;
+                } else if rook & bitboard::from_square(square::H1) != bitboard::EMPTY {
+                    self.castling_rights &= !castling::WHITE_KING_SIDE;
+                }
+            } else {
+                if rook & bitboard::from_square(square::A8) != bitboard::EMPTY {
+                    self.castling_rights &= !castling::BLACK_QUEEN_SIDE;
+                } else if rook & bitboard::from_square(square::H8) != bitboard::EMPTY {
+                    self.castling_rights &= !castling::BLACK_KING_SIDE;
+                }
+            }
+
+            let silent_rook_moves = rook_moves & !all;
+            self.silent_moves_loop::<T, IS_WHITE, { piece::ROOK }>(
+                callback,
+                rook,
+                silent_rook_moves,
+            );
+
+            let rook_captures = rook_moves & enemy;
+            self.capture_loop::<T, IS_WHITE, { piece::ROOK }>(callback, rook, rook_captures);
+
+            self.castling_rights = old_castling_rights;
+        }
+    }
+
+    #[inline]
+    pub fn queen_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
+        &mut self,
+        callback: &mut T,
+        check_mask: BitBoard,
+    ) {
+        let all = self.pieces[piece::ALL];
+        let enemy = self.get_enemy::<IS_WHITE, { piece::OCC }>();
+
+        let mut queens = self.get_friendly::<IS_WHITE, { piece::QUEEN }>();
+        while queens != bitboard::EMPTY {
+            let queen = bitboard::extract_lsb(&mut queens);
+            let queen_sq = bitboard::to_square(queen);
+            let pin_mask = self.pin_mask::<IS_WHITE>(queen_sq, all);
+
+            let queen_moves = luts::queen_moves_lut(queen_sq, all) & check_mask & pin_mask;
+
+            let silent_queen_moves = queen_moves & !all;
+            self.silent_moves_loop::<T, IS_WHITE, { piece::QUEEN }>(
+                callback,
+                queen,
+                silent_queen_moves,
+            );
+
+            let queen_captures = queen_moves & enemy;
+            self.capture_loop::<T, IS_WHITE, { piece::QUEEN }>(callback, queen, queen_captures);
+        }
+    }
+
+    pub fn legal_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
+        &mut self,
+        callback: &mut T,
+    ) {
+        self.switch_player();
+        self.half_moves += 1;
+
+        // save and clear en passant mask, only needed for check mask and en passant move
+        // only one clear/reset needed here instead of one per move
+        let en_passant_mask = self.get(piece::EN_PASSANT);
+        self.set(piece::EN_PASSANT, bitboard::EMPTY);
+
+        self.king_moves::<T, IS_WHITE>(callback);
+
+        // if there is a double check only the king can move
+        if self.double_check::<IS_WHITE>() {
+            self.switch_player();
+            self.half_moves -= 1;
+            return;
+        }
+
+        self.castling_moves::<T, IS_WHITE>(callback);
+
+        let check_mask = self.check_mask::<IS_WHITE>(en_passant_mask);
+
+        self.en_passant_moves::<T, IS_WHITE>(callback, en_passant_mask, check_mask);
+
+        self.pawn_moves::<T, IS_WHITE>(callback, check_mask);
+        self.knight_moves::<T, IS_WHITE>(callback, check_mask);
+        self.rook_moves::<T, IS_WHITE>(callback, check_mask);
+        self.bishop_moves::<T, IS_WHITE>(callback, check_mask);
+        self.queen_moves::<T, IS_WHITE>(callback, check_mask);
+
+        // reset board
+        self.set(piece::EN_PASSANT, en_passant_mask);
+
+        self.half_moves -= 1;
+        self.switch_player();
+    }
+
+    pub fn moves<T: FnMut(&mut Board, Move)>(&mut self, callback: &mut T) {
+        if self.white_to_play() {
+            self.legal_moves::<T, true>(callback);
+        } else {
+            self.legal_moves::<T, false>(callback);
+        }
+    }
+}
