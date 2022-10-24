@@ -1,5 +1,5 @@
 use crate::piece::{ColorPiece, Piece};
-use crate::{bitboard, piece, player, square, BitBoard, Board};
+use crate::{bitboard, piece, square, BitBoard};
 use std::fmt::{Display, Formatter};
 
 pub struct Move {

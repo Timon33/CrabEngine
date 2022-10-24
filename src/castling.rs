@@ -1,5 +1,4 @@
 use crate::{BitBoard, bitboard, Board, Move, piece, square};
-use crate::piece::QUEEN;
 
 /// Castling right as bitmask
 /// _QK _QK (lower 6 bits)

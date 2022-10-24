@@ -1,4 +1,4 @@
-use crate::{BitBoard, bitboard, File, file, Rank, rank};
+use crate::{File, file, Rank, rank};
 
 /// Square on a board
 pub type Square = u8;

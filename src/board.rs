@@ -6,6 +6,7 @@ use std::char::from_digit;
 use std::fmt::{Debug, Display, Formatter};
 
 pub struct Board {
+    // addressed using constants defined in piece.rs
     pub pieces: [BitBoard; 16],
     pub castling_rights: CastlingRights,
     side_to_play: Player,
@@ -14,8 +15,6 @@ pub struct Board {
 }
 
 impl Board {
-    // constructors
-
     /// completely empty board (invalid position)
     pub const fn empty_board() -> Board {
         Board {
@@ -78,12 +77,10 @@ impl Board {
         };
 
         // 5. half move clock
-        // TODO: make save
-        let half_moves_since_capture: u32 = fen_parts.next().unwrap().parse().unwrap();
+        let half_moves_since_capture: u32 = fen_parts.next().unwrap_or("0").parse().unwrap_or(0);
 
         // 6. full move clock
-        // TODO: make save
-        let full_moves: u32 = fen_parts.next().unwrap().parse().unwrap();
+        let full_moves: u32 = fen_parts.next().unwrap_or("0").parse().unwrap_or(0);
 
         let mut result = Board {
             pieces,

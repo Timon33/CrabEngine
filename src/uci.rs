@@ -1,10 +1,10 @@
 use crate::engine::Engine;
 use crate::{Board, Move};
 use std::io;
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::process::exit;
 
-pub const ENGINE_NAME: &str = "C-RUST";
+pub const ENGINE_NAME: &str = "CRAB-ENGINE";
 pub const AUTHOR: &str = "TIMON";
 
 pub enum GuiToEngine {
@@ -53,7 +53,6 @@ pub enum EngineToGui {
     UciOk,
     ReadyOk,
     BestMove(Move, Option<Move>), // best move and ponder move
-    CopyProtection,
     Info,
     Option,
     // custom
@@ -163,7 +162,6 @@ pub fn send_uci_command(command: EngineToGui) {
             None => println!("bestmove {}", m1),
             Some(m2) => println!("bestmove {} [ponder {}]", m1, m2),
         },
-        EngineToGui::CopyProtection => {}
         EngineToGui::Info => {}
         EngineToGui::Option => {}
         // custom
@@ -181,6 +179,7 @@ pub fn send_uci_command(command: EngineToGui) {
 
 pub fn processing_loop() {
     let mut engine: Engine = Engine::initialize(Board::empty_board());
+    // receiving loop executed by main thread
     loop {
         let command = get_next_uci_command();
         match command {
@@ -206,9 +205,14 @@ pub fn processing_loop() {
                 _ => {}
             },
             GuiToEngine::Go(instruction) => match instruction {
+                GoOptions::Ponder => {
+                    engine.ponder();
+                },
                 _ => {}
             },
-            GuiToEngine::Stop => {}
+            GuiToEngine::Stop => {
+                engine.stop();
+            }
             GuiToEngine::PonderHit => {}
             GuiToEngine::Quit => {
                 exit(0);
@@ -218,7 +222,7 @@ pub fn processing_loop() {
                     engine.current_board.to_fen(),
                 ))),
                 CustomGet::Perft(depth) => {
-                    let perft_results: Vec<(Move, u64)> = engine.perft_test(depth);
+                    let perft_results: Vec<(Move, u64)> = engine.dive_test(depth);
                     send_uci_command(EngineToGui::Send(CustomSend::Perft(perft_results)));
                 }
             },

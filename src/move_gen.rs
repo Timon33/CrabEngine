@@ -1,7 +1,7 @@
-use crate::piece::{piece_type, Piece};
-use crate::uci::GoOptions::MovesToGo;
-use crate::{bitboard, castling, luts, piece, player, rank, square, BitBoard, Board, Move, Square};
+use crate::piece::Piece;
+use crate::{bitboard, castling, luts, piece, rank, square, BitBoard, Board, Move, Square};
 
+/// pawn attack mask for given side of pawns
 #[inline]
 pub fn pawn_attacks<const IS_WHITE: bool>(pawns: BitBoard) -> BitBoard {
     if IS_WHITE {
@@ -11,6 +11,7 @@ pub fn pawn_attacks<const IS_WHITE: bool>(pawns: BitBoard) -> BitBoard {
     }
 }
 
+/// single forward pawn moves
 #[inline]
 pub fn pawn_moves<const IS_WHITE: bool>(pawns: BitBoard, occ: BitBoard) -> BitBoard {
     if IS_WHITE {
@@ -20,6 +21,7 @@ pub fn pawn_moves<const IS_WHITE: bool>(pawns: BitBoard, occ: BitBoard) -> BitBo
     }
 }
 
+/// double pawn moves from startposition of pawns
 #[inline]
 pub fn double_pawn_moves<const IS_WHITE: bool>(pawns: BitBoard, occ: BitBoard) -> BitBoard {
     if IS_WHITE {
@@ -30,12 +32,13 @@ pub fn double_pawn_moves<const IS_WHITE: bool>(pawns: BitBoard, occ: BitBoard) -
 }
 
 impl Board {
+    /// calls back for evey possible promotion of pawn
     #[inline]
     fn promote_piece<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
         &mut self,
         callback: &mut T,
-        from: BitBoard,
-        to: BitBoard,
+        from: BitBoard, // old pawn position
+        to: BitBoard, // position of promoted piece
     ) {
         self.set_friendly::<IS_WHITE, { piece::ROOK }>(
             self.get_friendly::<IS_WHITE, { piece::ROOK }>() ^ to,
@@ -74,12 +77,13 @@ impl Board {
         );
     }
 
+    /// silent (no capture) moves to every square in moves
     #[inline]
     fn silent_moves_loop<T: FnMut(&mut Board, Move), const IS_WHITE: bool, const PIECE: Piece>(
         &mut self,
         callback: &mut T,
         from: BitBoard,
-        mut moves: BitBoard,
+        mut moves: BitBoard, // all possible destinations of piece at from
     ) {
         while moves != bitboard::EMPTY {
             let to = bitboard::extract_lsb(&mut moves);
@@ -115,6 +119,7 @@ impl Board {
         }
     }
 
+    /// capture moves to every square in moves
     #[inline]
     fn capture_loop<T: FnMut(&mut Board, Move), const IS_WHITE: bool, const PIECE: Piece>(
         &mut self,
@@ -158,10 +163,11 @@ impl Board {
         }
     }
 
+    /// mask of every square that is controlled (attacked) by the enemy side
     #[inline]
     pub fn danger_mask<const IS_WHITE: bool>(&self) -> BitBoard {
         let king = self.get_enemy::<IS_WHITE, { piece::KING }>();
-        let mut knights = self.get_enemy::<IS_WHITE, { piece::KNIGHT }>();
+        let knights = self.get_enemy::<IS_WHITE, { piece::KNIGHT }>();
         let pawns = self.get_enemy::<IS_WHITE, { piece::PAWN }>();
         let mut queens = self.get_enemy::<IS_WHITE, { piece::QUEEN }>();
         let mut rooks = self.get_enemy::<IS_WHITE, { piece::ROOK }>();
@@ -169,7 +175,7 @@ impl Board {
 
         let occ = self.pieces[piece::ALL] & !self.get_friendly::<IS_WHITE, { piece::KING }>();
 
-        let mut queen_danger = bitboard::EMPTY;;
+        let mut queen_danger = bitboard::EMPTY;
         while queens != bitboard::EMPTY {
             let queen = bitboard::extract_lsb(&mut queens);
             queen_danger |= luts::queen_moves_lut(bitboard::to_square(queen), occ);
@@ -188,23 +194,18 @@ impl Board {
         }
 
         let king_danger = luts::KING_MOVES[bitboard::to_square(king) as usize];
-        let mut pawn_danger = bitboard::EMPTY;
-        if IS_WHITE {
-            pawn_danger = pawn_attacks::<false>(pawns);
+        let pawn_danger = if IS_WHITE {
+            pawn_attacks::<false>(pawns)
         } else {
-            pawn_danger = pawn_attacks::<true>(pawns);
-        }
+            pawn_attacks::<true>(pawns)
+        };
 
-        // TODO improve speed branchless
-        let mut knight_danger = bitboard::EMPTY;
-        while knights != bitboard::EMPTY {
-            let knight = bitboard::extract_lsb(&mut knights);
-            knight_danger |= luts::KNIGHT_MOVE[bitboard::to_square(knight) as usize]
-        }
+        let knight_danger = bitboard::compute_knight_moves(knights);
 
         queen_danger | rook_danger | bishop_danger | king_danger | pawn_danger | knight_danger
     }
 
+    /// checks if the king of the given side is in a double check
     #[inline]
     pub fn double_check<const IS_WHITE: bool>(&self) -> bool {
         let king = self.get_friendly::<IS_WHITE, { piece::KING }>();
@@ -228,12 +229,14 @@ impl Board {
         (hv_checkers | diag_checkers | pawn_checkers | knight_checkers).count_ones() >= 2
     }
 
+    /// masks every square where a piece can move to to block a check or capture the piece giving check
+    /// (if there is a double check only the king can be moved as blocking/capturing one check is not enough)
     #[inline]
-    pub fn check_mask<const IS_WHITE: bool>(&self, en_passant_mask: BitBoard) -> BitBoard {
+    pub fn check_mask<const IS_WHITE: bool>(&self) -> BitBoard {
         let king = self.get_friendly::<IS_WHITE, { piece::KING }>();
         let king_sq = bitboard::to_square(king);
 
-        let mut pawn_mask =
+        let pawn_mask =
             pawn_attacks::<IS_WHITE>(king) & self.get_enemy::<IS_WHITE, { piece::PAWN }>();
 
         let knight_mask =
@@ -272,8 +275,9 @@ impl Board {
         }
     }
 
+    /// horizontall and vertical pin mask of the possibly pinned square
     #[inline]
-    pub fn hv_pin_mask<const IS_WHITE: bool>(
+    fn hv_pin_mask<const IS_WHITE: bool>(
         &self,
         possibly_pinned_sq: Square,
         occ: BitBoard,
@@ -302,8 +306,9 @@ impl Board {
         }
     }
 
+    /// same as hv_pin_mask for diagonal and anti-diagonal pin mask
     #[inline]
-    pub fn diag_pin_mask<const IS_WHITE: bool>(
+    fn diag_pin_mask<const IS_WHITE: bool>(
         &self,
         possibly_pinned_sq: Square,
         occ: BitBoard,
@@ -332,6 +337,8 @@ impl Board {
         }
     }
 
+    /// pin mask of the possibly pinned square, the piece on the square can only move
+    /// inside the pin mask
     #[inline]
     pub fn pin_mask<const IS_WHITE: bool>(
         &self,
@@ -342,6 +349,7 @@ impl Board {
             & self.diag_pin_mask::<IS_WHITE>(possibly_pinned_sq, occ)
     }
 
+    /// callback for evey legal king move (not including castling)
     #[inline]
     pub fn king_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
         &mut self,
@@ -367,6 +375,8 @@ impl Board {
         self.castling_rights = old_castling_rights;
     }
 
+    /// callback for all legal castling moves (castling rights have to be correct in fen string,
+    /// no additional check are performed if there rook is still in the right spot)
     #[inline]
     pub fn castling_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
         &mut self,
@@ -401,6 +411,7 @@ impl Board {
         }
     }
 
+    /// generate all legal pawn moves (single move, double move, capture, promotions) excluding en passant
     #[inline]
     pub fn pawn_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
         &mut self,
@@ -439,6 +450,7 @@ impl Board {
         }
     }
 
+    /// generate legal en passant moves (0-2 moves)
     #[inline]
     pub fn en_passant_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
         &mut self,
@@ -498,6 +510,7 @@ impl Board {
         }
     }
 
+    /// generate legal knight moves
     #[inline]
     pub fn knight_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
         &mut self,
@@ -527,6 +540,7 @@ impl Board {
         }
     }
 
+    /// generate legal bishop moves
     #[inline]
     pub fn bishop_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
         &mut self,
@@ -556,6 +570,7 @@ impl Board {
         }
     }
 
+    /// generate legal rook moves (excluding castling)
     #[inline]
     pub fn rook_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
         &mut self,
@@ -602,6 +617,7 @@ impl Board {
         }
     }
 
+    /// generate legal queen moves
     #[inline]
     pub fn queen_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
         &mut self,
@@ -631,7 +647,7 @@ impl Board {
         }
     }
 
-    pub fn legal_moves<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
+    fn legal_moves_const_side<T: FnMut(&mut Board, Move), const IS_WHITE: bool>(
         &mut self,
         callback: &mut T,
     ) {
@@ -654,7 +670,7 @@ impl Board {
 
         self.castling_moves::<T, IS_WHITE>(callback);
 
-        let check_mask = self.check_mask::<IS_WHITE>(en_passant_mask);
+        let check_mask = self.check_mask::<IS_WHITE>();
 
         self.en_passant_moves::<T, IS_WHITE>(callback, en_passant_mask, check_mask);
 
@@ -671,11 +687,12 @@ impl Board {
         self.switch_player();
     }
 
-    pub fn moves<T: FnMut(&mut Board, Move)>(&mut self, callback: &mut T) {
+    /// generate all legal moves from given board state/position
+    pub fn generate_legal_moves<T: FnMut(&mut Board, Move)>(&mut self, callback: &mut T) {
         if self.white_to_play() {
-            self.legal_moves::<T, true>(callback);
+            self.legal_moves_const_side::<T, true>(callback);
         } else {
-            self.legal_moves::<T, false>(callback);
+            self.legal_moves_const_side::<T, false>(callback);
         }
     }
 }

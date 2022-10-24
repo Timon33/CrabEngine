@@ -5,7 +5,7 @@ pub struct Engine {
     board_history: Vec<Board>,
     move_history: Vec<Move>,
 
-    pub show_debug_information: bool,
+    pub show_debug_information: bool
 }
 
 impl Engine {
@@ -20,7 +20,7 @@ impl Engine {
 
     fn perft_rec_callback(board: &mut Board, depth: u64, counter: &mut u64) {
         if depth > 1 {
-            board.moves(&mut |b: &mut Board, _| {
+            board.generate_legal_moves(&mut |b: &mut Board, _| {
                 Self::perft_rec_callback(b, depth - 1, counter);
             });
         } else {
@@ -28,14 +28,29 @@ impl Engine {
         }
     }
 
-    pub fn perft_test(&mut self, depth: u64) -> Vec<(Move, u64)> {
+    pub fn dive_test(&mut self, depth: u64) -> Vec<(Move, u64)> {
         let mut result: Vec<(Move, u64)> = Vec::new();
-        let current_board_clone = self.current_board.clone();
-        self.current_board.moves(&mut |current_board: &mut Board, uci_move: Move| {
+        self.current_board.generate_legal_moves(&mut |b: &mut Board, uci_move: Move| {
             let mut count: u64 = 0;
-            Self::perft_rec_callback(current_board, depth, &mut count);
+            Self::perft_rec_callback(b, depth, &mut count);
             result.push((uci_move, count));
         });
         result
+    }
+
+    pub fn perft(&mut self, depth: u64) -> u64 {
+        let mut count: u64 = 0;
+        self.current_board.generate_legal_moves(&mut |b: &mut Board, _| {
+            Self::perft_rec_callback(b, depth, &mut count);
+        });
+        count
+    }
+
+    pub fn ponder(&mut self) {
+
+    }
+
+    pub fn stop(&mut self) {
+
     }
 }

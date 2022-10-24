@@ -1,6 +1,5 @@
 use crate::{file, File, rank, Rank, Square};
 use std::arch::x86_64::{_pdep_u64, _pext_u64};
-use std::fmt::{Display, Formatter};
 
 const SET_BIT_DISPLAY: &str = "X ";
 const UNSET_BIT_DISPLAY: &str = ". ";
@@ -82,6 +81,8 @@ pub const fn from_square(sq: Square) -> BitBoard {
 pub const fn to_square(bb: BitBoard) -> Square {
     bb.trailing_zeros() as Square
 }
+
+// bitboard masks
 
 #[inline]
 pub const fn file_mask_of_sq(sq: Square) -> BitBoard {
@@ -182,6 +183,8 @@ pub const fn ray_mask(
     }
 }
 
+// functions for computing moves (instead of looking them up)
+
 #[inline]
 const fn double_sub_xor(o: BitBoard, s: BitBoard) -> BitBoard {
     o.wrapping_sub(s) ^ (o.reverse_bits().wrapping_sub(s.reverse_bits())).reverse_bits()
@@ -204,6 +207,14 @@ pub const fn compute_bishop_moves(sq: Square, occ: BitBoard) -> BitBoard {
     let sq_mask = from_square(sq);
     sliding_moves(occ, diagonal_mask(sq), sq_mask)
         | sliding_moves(occ, anti_diagonal_mask(sq), sq_mask)
+}
+
+#[inline]
+pub const fn compute_knight_moves(knights: BitBoard) -> BitBoard {
+    ((knights << 15 | knights >> 17) & 0x7F7F7F7F7F7F7F7F) // 1 left
+        | ((knights << 6 | knights >> 10) & 0x3F3F3F3F3F3F3F3F) // 2 left
+        | ((knights << 17 | knights >> 15) & 0xFEFEFEFEFEFEFEFE) // 1 right
+        | ((knights << 10 | knights >> 6) & 0xFCFCFCFCFCFCFCFC) // 2 right
 }
 
 #[inline]

@@ -1,15 +1,14 @@
 use crate::{BitBoard, bitboard, Square, square};
 
+// pre calculate all constant lookup tables used by the move generation
+
 pub const KNIGHT_MOVE: [BitBoard; 64] = {
     let mut res: [BitBoard; 64] = [bitboard::EMPTY; 64];
     let mut sq: Square = 0;
     while sq < 64 {
         // generate bitboard by ORing up to 8 possible moves
         let sq_bb = bitboard::from_square(sq);
-        res[sq as usize] = ((sq_bb << 15 | sq_bb >> 17) & 0x7F7F7F7F7F7F7F7F) // 1 left
-            | ((sq_bb << 6 | sq_bb >> 10) & 0x3F3F3F3F3F3F3F3F) // 2 left
-            | ((sq_bb << 17 | sq_bb >> 15) & 0xFEFEFEFEFEFEFEFE) // 1 right
-            | ((sq_bb << 10 | sq_bb >> 6) & 0xFCFCFCFCFCFCFCFC); // 2 right
+        res[sq as usize] = bitboard::compute_knight_moves(sq_bb);
         sq += 1;
     }
     res
@@ -141,6 +140,8 @@ pub const DIAG_SLIDER_CHECK_MASK: [BitBoard; 0x1000] = {
     }
     res
 };
+
+// use parallel bit extraction to quickly find lookup locations of moves
 
 #[inline]
 pub fn rook_moves_lut(sq: Square, occ: BitBoard) -> BitBoard {
